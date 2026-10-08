@@ -238,6 +238,100 @@ def test_query_params_round_trip() -> None:
     assert at.query_params["from_app"] == "bar"
 
 
+def test_query_bound_widget_interaction_syncs_query_params() -> None:
+    """Interacting with a query-bound widget updates at.query_params and st.query_params."""
+
+    def script():
+        import streamlit as st
+
+        st.selectbox("FC", ["A", "B"], key="fc", bind="query-params")
+        st.write("Current QP:", dict(st.query_params))
+
+    at = AppTest.from_function(script).run()
+    assert at.query_params == {}
+
+    at.selectbox[0].set_value("B").run()
+    assert at.query_params == {"fc": "B"}
+    assert at.selectbox[0].value == "B"
+    assert at.json[0].value == '{"fc": "B"}'
+
+    # Resetting to default value clears the query parameter
+    at.selectbox[0].set_value("A").run()
+    assert at.query_params == {}
+    assert at.json[0].value == "{}"
+
+
+def test_query_bound_widgets_multiple_types() -> None:
+    """Multiple query-bound widget types correctly sync and clear query parameters."""
+
+    def script():
+        import streamlit as st
+
+        st.checkbox("CB", value=False, key="cb", bind="query-params")
+        st.multiselect(
+            "MS", ["x", "y", "z"], default=["x"], key="ms", bind="query-params"
+        )
+        st.slider(
+            "SL", min_value=0, max_value=100, value=10, key="sl", bind="query-params"
+        )
+        st.text_input("TI", value="hello", key="ti", bind="query-params")
+        st.pills("PL", ["opt1", "opt2"], default="opt1", key="pl", bind="query-params")
+        st.write("App QP:", dict(st.query_params))
+
+    at = AppTest.from_function(script).run()
+    assert at.query_params == {}
+
+    # Preserves unrelated existing query params
+    at.query_params["unrelated"] = "test_val"
+
+    at.checkbox[0].check().run()
+    assert at.query_params == {"unrelated": "test_val", "cb": "true"}
+
+    at.multiselect[0].select("y").run()
+    assert at.query_params == {"unrelated": "test_val", "cb": "true", "ms": ["x", "y"]}
+
+    # Clearing multiselect produces empty string (?ms=)
+    at.multiselect[0].unselect("x").unselect("y").run()
+    assert at.query_params == {"unrelated": "test_val", "cb": "true", "ms": ""}
+
+    at.slider[0].set_value(50).run()
+    assert at.query_params == {
+        "unrelated": "test_val",
+        "cb": "true",
+        "ms": "",
+        "sl": "50",
+    }
+
+    at.text_input[0].input("world").run()
+    assert at.query_params == {
+        "unrelated": "test_val",
+        "cb": "true",
+        "ms": "",
+        "sl": "50",
+        "ti": "world",
+    }
+
+    at.pills[0].select("opt2").run()
+    assert at.query_params == {
+        "unrelated": "test_val",
+        "cb": "true",
+        "ms": "",
+        "sl": "50",
+        "ti": "world",
+        "pl": "opt2",
+    }
+
+    # Reset all to default values
+    at.checkbox[0].uncheck()
+    at.multiselect[0].set_value(["x"])
+    at.slider[0].set_value(10)
+    at.text_input[0].input("hello")
+    at.pills[0].select("opt1")
+    at.run()
+
+    assert at.query_params == {"unrelated": "test_val"}
+
+
 def test_secrets():
     def script():
         import streamlit as st

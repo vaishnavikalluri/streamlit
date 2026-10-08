@@ -59,6 +59,7 @@ from streamlit.proto.Markdown_pb2 import Markdown as MarkdownProto
 from streamlit.proto.Slider_pb2 import Slider as SliderProto
 from streamlit.proto.WidgetStates_pb2 import WidgetState, WidgetStates
 from streamlit.runtime.state.common import TESTING_KEY, user_key_from_element_id
+from streamlit.runtime.state.query_params import _coerce_value_for_query_url
 from streamlit.testing.v1.errors import AppTestError
 
 if TYPE_CHECKING:
@@ -3217,6 +3218,73 @@ def _cleared_widget_state(node: Widget) -> WidgetState:
     return ws
 
 
+def _sync_query_param_bound_widgets(tree: ElementTree) -> None:
+    """Synchronize query-bound widget values to AppTest.query_params before a rerun."""
+    runner = tree._runner
+    if runner is None:
+        return
+
+    submitted = _submitted_form_ids(tree)
+    form_clears = _form_clear_flags(tree)
+    cleared: set[str] = runner._cleared_form_ids if runner is not None else set()
+    session_state = tree.session_state
+    if session_state is None:
+        return
+
+    for node in tree:
+        if not isinstance(node, Widget):
+            continue
+
+        param_key = getattr(node.proto, "query_param_key", "")
+        if not param_key:
+            continue
+
+        form_id = _widget_form_id(node)
+        if form_id and form_id not in submitted:
+            # Changes in unsubmitted forms are pending and should not update query params yet
+            continue
+
+        metadata = session_state._state._get_widget_metadata(node.id)
+        if metadata is None or metadata.bind != "query-params":
+            continue
+
+        if _use_form_clear_defaults(
+            node,
+            submitted=submitted,
+            cleared=cleared,
+            form_clears=form_clears,
+        ):
+            runner.query_params.pop(param_key, None)
+            continue
+
+        if not _has_pending_value(node):
+            continue
+
+        widget_value = node.value
+        default_value = metadata.deserializer(None)
+
+        if widget_value == default_value:
+            runner.query_params.pop(param_key, None)
+        else:
+            if widget_value is None or (
+                isinstance(widget_value, (list, tuple)) and len(widget_value) == 0
+            ):
+                if metadata.clearable:
+                    runner.query_params[param_key] = ""
+                else:
+                    runner.query_params.pop(param_key, None)
+            else:
+                serialized = metadata.serializer(widget_value)
+                coerced = _coerce_value_for_query_url(serialized, metadata.value_type)
+                if (
+                    isinstance(coerced, list)
+                    and len(coerced) == 1
+                    and not isinstance(widget_value, (list, tuple))
+                ):
+                    coerced = coerced[0]
+                runner.query_params[param_key] = coerced
+
+
 def get_widget_state(node: Node) -> WidgetState | None:
     if isinstance(node, Widget):
         return node._widget_state
@@ -3329,6 +3397,7 @@ class ElementTree(Block):
         """
         assert self._runner is not None
 
+        _sync_query_param_bound_widgets(self)
         submitted = _submitted_form_ids(self)
         form_clears = _form_clear_flags(self)
         widget_states = self.get_widget_states()
